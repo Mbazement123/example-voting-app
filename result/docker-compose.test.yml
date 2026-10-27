@@ -13,7 +13,7 @@ services:
 
   vote:
     build: ../vote/
-    ports: ["80"]
+    ports: ["8080"]
     depends_on:
       - redis
       - db
@@ -23,7 +23,11 @@ services:
 
   result:
     build: .
-    ports: ["80"]
+    ports: ["8080"]
+    environment:
+      PORT: 8080
+      DB_HOST: db
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     depends_on:
       - redis
       - db
@@ -36,6 +40,9 @@ services:
     depends_on:
       - redis
       - db
+    environment:
+      DB_HOST: db
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     networks:
       - back-tier
 
@@ -48,7 +55,7 @@ services:
     image: postgres:9.4
     environment:
       POSTGRES_USER: "postgres"
-      POSTGRES_PASSWORD: "postgres"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - "db-data:/var/lib/postgresql/data"
     networks:

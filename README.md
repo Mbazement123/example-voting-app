@@ -1,65 +1,79 @@
 # Example Voting App
 
-A simple distributed application running across multiple Docker containers.
+A small distributed voting app and DevOps capstone. The Python vote service sends votes through Redis, a .NET worker stores them in PostgreSQL, and the Node.js result service streams totals to browsers.
 
-## Getting started
+## Run Locally
 
-Download [Docker Desktop](https://www.docker.com/products/docker-desktop) for Mac or Windows. [Docker Compose](https://docs.docker.com/compose) will be automatically installed. On Linux, make sure you have the latest version of [Compose](https://docs.docker.com/compose/install/).
-
-This solution uses Python, Node.js, .NET, with Redis for messaging and Postgres for storage.
-
-Run in this directory to build and run the app:
+Install Docker with Compose v2, then create a local environment file and start the services:
 
 ```shell
-docker compose up
+cp .env.example .env
+# Replace POSTGRES_PASSWORD with a unique local password.
+docker compose up --build
 ```
 
-The `vote` app will be running at [http://localhost:8080](http://localhost:8080), and the `results` will be at [http://localhost:8081](http://localhost:8081).
-
-Alternately, if you want to run it on a [Docker Swarm](https://docs.docker.com/engine/swarm/), first make sure you have a swarm. If you don't, run:
-
-```shell
-docker swarm init
-```
-
-Once you have your swarm, in this directory run:
-
-```shell
-docker stack deploy --compose-file docker-stack.yml vote
-```
-
-## Run the app in Kubernetes
-
-The folder k8s-specifications contains the YAML specifications of the Voting App's services.
-
-Run the following command to create the deployments and services. Note it will create these resources in your current namespace (`default` if you haven't changed it.)
-
-```shell
-kubectl create -f k8s-specifications/
-```
-
-The `vote` web app is then available on port 31000 on each host of the cluster, the `result` web app is available on port 31001.
-
-To remove them, run:
-
-```shell
-kubectl delete -f k8s-specifications/
-```
+Open [http://localhost:8080](http://localhost:8080) to vote and [http://localhost:8081](http://localhost:8081) to see results. The `.env` file is ignored by Git. To stop the app, press Ctrl+C and run `docker compose down`; add `--volumes` only when you also want to delete local vote data.
 
 ## Architecture
 
 ![Architecture diagram](architecture.excalidraw.png)
 
-* A front-end web app in [Python](/vote) which lets you vote between two options
-* A [Redis](https://hub.docker.com/_/redis/) which collects new votes
-* A [.NET](/worker/) worker which consumes votes and stores them in…
-* A [Postgres](https://hub.docker.com/_/postgres/) database backed by a Docker volume
-* A [Node.js](/result) web app which shows the results of the voting in real time
+The Kubernetes deployment runs the same three application services with internal Redis and PostgreSQL services. PostgreSQL uses an encrypted EBS volume; the vote and result services are ClusterIP-only and can be reached with `kubectl port-forward`.
 
-## Notes
+## CI/CD
 
-The voting application only accepts one vote per client browser. It does not register additional votes if a vote has already been submitted from a client.
+`.github/workflows/ci-cd.yaml` runs the Docker Compose integration test, builds each app image, scans each image with Trivy, and publishes the images to GHCR tagged with the full commit SHA. Pull requests build and scan without publishing. Pushes to `main` deploy that SHA with Helm after the tests and image jobs succeed.
 
-This isn't an example of a properly architected perfectly designed distributed app... it's just a simple
-example of the various types of pieces and languages you might see (queues, persistent data, etc), and how to
-deal with them in Docker at a basic level.
+The first successful deployment requires these repository settings:
+
+| Setting | Kind | Purpose |
+| --- | --- | --- |
+| `AWS_ACCESS_KEY_ID` | Actions secret | Access key ID for a dedicated IAM user used by the workflows |
+| `AWS_SECRET_ACCESS_KEY` | Actions secret | Secret access key for that IAM user |
+| `AWS_REGION` | Actions variable | Region for EKS and Terraform state |
+| `AWS_IAM_PRINCIPAL_ARN` | Actions variable | ARN of the IAM user whose access keys are configured above |
+| `GHCR_USERNAME` | Actions variable | User that owns the GHCR read token |
+| `POSTGRES_PASSWORD` | Actions secret | Database password supplied to Kubernetes as a Secret |
+| `GHCR_PULL_TOKEN` | Actions secret | Persistent token with `read:packages` for the EKS image pull secret |
+
+Create a dedicated IAM user for GitHub Actions and store its access key ID and secret access key as repository secrets. Grant that user the permissions needed to create and secure the Terraform state bucket, read and write its state and lock files, and manage the EKS/IAM resources in `terraform/`, including `iam:PassRole` for the cluster and node roles. The bucket name is derived from the AWS account ID and region, so no bucket-name Actions variable is needed. Terraform grants this user EKS cluster-admin access so GitHub Actions can deploy Helm releases. Static access keys are long-lived credentials; restrict the user permissions, rotate the keys, and never commit them to the repository.
+
+Set `AWS_IAM_PRINCIPAL_ARN` to the IAM user's ARN and `AWS_REGION` to the deployment region. Do not commit access keys, the database password, or the GHCR token to the repository. Restrict `cluster_endpoint_public_access_cidrs` in `terraform/variables.tf` to your approved egress ranges when possible; EKS still requires IAM authentication for API access.
+
+Merge a pull request into `main` to create the EKS cluster. The apply workflow uses Terraform to create and configure the account- and region-specific S3 state bucket before initializing the main state backend. The deployment workflow waits for the cluster to become active, writes the Kubernetes Secrets from Actions secrets, and installs/upgrades the `voting-app` Helm release. GHCR packages must be available to the token configured for `GHCR_PULL_TOKEN`.
+
+## Deploy And Roll Back
+
+After deployment, run each command in a separate terminal to forward the internal services to your workstation:
+
+```shell
+kubectl port-forward -n voting-app svc/voting-app-example-voting-app-vote 8080:80
+kubectl port-forward -n voting-app svc/voting-app-example-voting-app-result 8081:80
+```
+
+To demonstrate a bad release and recover it, use a deliberately unavailable image tag, then roll back to the previous Helm revision:
+
+```shell
+helm upgrade voting-app ./helm/example-voting-app -n voting-app --set-string images.tag=bad-release
+helm history voting-app -n voting-app
+helm rollback voting-app -n voting-app
+kubectl rollout status -n voting-app deployment/voting-app-example-voting-app-vote
+```
+
+The failed release is recorded by Helm; `helm rollback` restores the last successful release. PostgreSQL data remains on its EBS volume while the cluster exists. Destroying the cluster deletes the volume and its data.
+
+## Infrastructure Lifecycle
+
+The Terraform root in `terraform/` creates an EKS cluster and managed node group in the account's default VPC. Before initializing that root, the workflow uses the separate `terraform/state/` configuration to create the private, encrypted, versioned S3 bucket used for Terraform state. Its name is derived from the AWS account ID and region. The bucket is protected from Terraform destruction and is retained when the EKS infrastructure is destroyed.
+
+- A pull request merged into `main` runs the infrastructure apply workflow.
+- Select **Destroy infrastructure** under Actions and check `confirm_destroy` to destroy the cluster. The Terraform state bucket is retained.
+- Recreate the environment by merging a pull request after destruction.
+
+EKS, EC2 nodes, and EBS storage incur AWS charges while provisioned. Destroy the environment when it is not in use.
+
+## Existing Examples
+
+`docker-compose.images.yml`, `docker-stack.yml`, and `k8s-specifications/` preserve the repository's original upstream sample images and their public demo credential (`postgres`). They are for disposable local demonstrations only; do not expose them or reuse that credential. The source-built Compose app and automated Helm deployment use externally supplied credentials. External workflow and registry data flows are listed in [`data-flows.yaml`](data-flows.yaml).
+
+The voting application accepts one vote per client browser and updates that browser's existing vote rather than adding a second one.

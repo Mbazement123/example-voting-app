@@ -1,4 +1,4 @@
-FROM node:18-slim
+FROM node:18-slim@sha256:f9ab18e354e6855ae56ef2b290dd225c1e51a564f87584b9bd21dd651838830e
 
 # add curl for healthcheck
 RUN apt-get update && \
@@ -16,10 +16,11 @@ RUN npm ci && \
  npm cache clean --force && \
  mv /usr/local/app/node_modules /node_modules
 
-COPY . .
+COPY --chown=node:node . .
 
-ENV PORT=80
-EXPOSE 80
+ENV PORT=8080
+EXPOSE 8080
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "server.js"]
+USER node

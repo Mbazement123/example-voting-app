@@ -1,0 +1,22 @@
+replicaCount: 1
+
+images:
+  tag: latest
+  pullPolicy: IfNotPresent
+  vote:
+    repository: ghcr.io/dockersamples/example-voting-app-vote
+  result:
+    repository: ghcr.io/dockersamples/example-voting-app-result
+  worker:
+    repository: ghcr.io/dockersamples/example-voting-app-worker
+
+imagePullSecrets:
+  - name: ghcr-pull
+
+postgres:
+  image: postgres:15-alpine
+  existingSecret: voting-app-db
+  storage: 2Gi
+
+redis:
+  image: redis:alpine

@@ -1,0 +1,42 @@
+version: 1
+flows:
+  - id: github-actions-source
+    source: github-repository
+    destination: github-actions-runner
+    data: [source-code, workflow-configuration, commit-sha]
+    purpose: test-build-scan-and-deploy
+  - id: trivy-database
+    source: github-actions-runner
+    destination: ghcr.io/aquasecurity/trivy-db
+    data: [vulnerability-database-request]
+    purpose: image-vulnerability-scanning
+  - id: publish-images
+    source: github-actions-runner
+    destination: ghcr.io
+    data: [application-container-images, commit-sha-tags]
+    credentials: github-actions-token
+    purpose: store-images-for-eks-deployment
+  - id: aws-oidc
+    source: github-actions-runner
+    destination: aws-sts-and-eks
+    data: [github-oidc-identity-claims, terraform-resource-operations, helm-release-manifests]
+    credentials: github-oidc
+    purpose: provision-destroy-and-deploy
+  - id: terraform-state
+    source: github-actions-runner
+    destination: configured-s3-state-bucket
+    data: [terraform-resource-state]
+    credentials: aws-oidc
+    purpose: persistent-terraform-state-and-locking
+  - id: database-secret
+    source: github-actions-secret
+    destination: kubernetes-secret-voting-app-db
+    data: [postgres-password]
+    purpose: supply-database-credentials-to-pods
+    retention: while-the-eks-cluster-exists
+  - id: ghcr-image-pull
+    source: github-actions-secret
+    destination: ghcr.io
+    data: [image-pull-authentication]
+    credentials: ghcr-pull-token
+    purpose: allow-eks-to-pull-private-images
