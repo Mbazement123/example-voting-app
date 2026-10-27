@@ -103,11 +103,11 @@ Verify that the returned ARN matches `AWS_IAM_PRINCIPAL_ARN`.
 The infrastructure workflow runs when a pull request targeting `main` is merged. It derives the S3 state bucket name from the AWS account ID and region, bootstraps the bucket with Terraform, then initializes the main Terraform configuration with that bucket and applies the EKS resources.
 
 1. Push your project changes to a branch and open a pull request targeting `main`.
-2. Wait for the **CI and deploy** workflow's tests, Terraform validation, Helm lint, image builds, and scans to complete successfully.
+2. Wait for the **CI** workflow's tests, Terraform validation, Helm lint, image builds, and scans to complete successfully.
 3. Merge the pull request.
 4. Open **Actions → Provision infrastructure** and inspect the run. Wait for the Terraform apply job to finish successfully.
 
-The cluster name created by the current Terraform configuration is `voting-app-dev`. Infrastructure creation may take several minutes. If the concurrent deploy job fails while waiting for the cluster, rerun the failed deploy job after provisioning succeeds.
+The cluster name created by the current Terraform configuration is `voting-app-dev`. Infrastructure creation may take several minutes. The provisioning workflow runs **Deploy to EKS** after Terraform apply succeeds and the matching application images are published.
 
 ### Provision locally with Terraform instead
 
@@ -158,14 +158,14 @@ ACTIVE
 
 ## 6. Deploy the application
 
-On pushes to `main`, the **CI and deploy** workflow tests the application, validates Terraform and Helm, builds and scans the three service images, pushes them to GHCR tagged with the commit SHA, and then deploys that SHA with Helm.
+The **CI** workflow tests the application, validates Terraform and Helm, and builds and scans the three service images. Pushes to `main` publish the images to GHCR tagged with the commit SHA. When a pull request is merged to `main`, the **Provision infrastructure** workflow applies Terraform first, waits for the images for that merge commit to be published, then deploys it to EKS with Helm.
 
 The workflow also creates/updates these Kubernetes Secrets in the `voting-app` namespace:
 
 - `voting-app-db` for the PostgreSQL password.
 - `ghcr-pull` for pulling the GHCR images.
 
-Open **Actions → CI and deploy** and wait for the **Deploy to EKS** job to finish. Confirm the workloads are ready:
+Open **Actions → Provision infrastructure** and wait for the **Apply infrastructure** and **Deploy to EKS** jobs to finish. Confirm the workloads are ready:
 
 ```shell
 aws eks update-kubeconfig \
@@ -183,7 +183,7 @@ The pods should reach `Running`/`Ready`, and the PostgreSQL PVC should become `B
 
 The file `helm/example-voting-app/templates/resources.yaml` is a Helm template, not a plain Kubernetes YAML file. Render and install it with Helm; do not run `kubectl apply -f` directly on the template. The following commands assume the cluster is provisioned, the `voting-app` AWS profile is configured, and the application images have already been pushed to GHCR. A push to `main` runs the image build and publishes images tagged with that commit's full SHA.
 
-Configure local access and select the image tag from the successful **CI and deploy** run:
+Configure local access and select the image tag from the successful **CI** run:
 
 ```shell
 export AWS_PROFILE=voting-app

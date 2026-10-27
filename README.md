@@ -22,7 +22,7 @@ The Kubernetes deployment runs the same three application services with internal
 
 ## CI/CD
 
-`.github/workflows/ci-cd.yaml` runs the Docker Compose integration test, builds each app image, scans each image with Trivy, and publishes the images to GHCR tagged with the full commit SHA. Pull requests build and scan without publishing. Pushes to `main` deploy that SHA with Helm after the tests and image jobs succeed.
+`.github/workflows/ci-cd.yaml` runs the Docker Compose integration test, validates Terraform and Helm, and builds and scans each app image. Pushes publish images to GHCR tagged with the full commit SHA. When a pull request is merged to `main`, `.github/workflows/provision-infrastructure.yaml` applies Terraform and then deploys that merge commit to EKS with Helm, waiting for its images to be published first.
 
 The first successful deployment requires these repository settings:
 

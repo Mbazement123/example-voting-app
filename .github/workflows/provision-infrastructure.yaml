@@ -14,6 +14,7 @@ concurrency:
 
 jobs:
   apply:
+    name: Apply infrastructure
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
@@ -47,3 +48,95 @@ jobs:
           terraform apply -input=false -auto-approve
           -var="aws_region=${{ vars.AWS_REGION }}"
           -var="github_actions_principal_arn=${{ vars.AWS_IAM_PRINCIPAL_ARN }}"
+
+  deploy:
+    name: Deploy to EKS
+    if: github.event.pull_request.merged == true
+    needs: apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: voting-app-deploy
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Wait for EKS cluster
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          for attempt in $(seq 1 120); do
+            status=$(aws eks describe-cluster --name voting-app-dev --region "$AWS_REGION" --query 'cluster.status' --output text 2>/dev/null || true)
+            if [ "$status" = ACTIVE ]; then
+              exit 0
+            fi
+            echo "Waiting for EKS cluster to become active (attempt $attempt/120)"
+            sleep 15
+          done
+          echo "EKS cluster did not become active within 30 minutes" >&2
+          exit 1
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Wait for application images
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          IMAGE_TAG: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          image_root="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          for app in vote result worker; do
+            image="$image_root-$app:$IMAGE_TAG"
+            for attempt in $(seq 1 60); do
+              if docker manifest inspect "$image" >/dev/null 2>&1; then
+                break
+              fi
+              if [ "$attempt" -eq 60 ]; then
+                echo "Timed out waiting for image $image to be published" >&2
+                exit 1
+              fi
+              echo "Waiting for $image to be published (attempt $attempt/60)"
+              sleep 10
+            done
+          done
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --region "${{ vars.AWS_REGION }}" --name voting-app-dev
+      - uses: azure/setup-helm@v4
+      - name: Create namespace credentials
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: |
+          test -n "$POSTGRES_PASSWORD"
+          test -n "$GHCR_USERNAME"
+          test -n "$GHCR_PULL_TOKEN"
+          kubectl create namespace voting-app --dry-run=client -o yaml | kubectl apply -f -
+          printf '%s' "$POSTGRES_PASSWORD" | kubectl create secret generic voting-app-db --namespace voting-app --from-file=password=/dev/stdin --dry-run=client -o yaml | kubectl apply -f -
+          auth=$(printf '%s:%s' "$GHCR_USERNAME" "$GHCR_PULL_TOKEN" | base64 -w0)
+          docker_config=$(jq -n --arg username "$GHCR_USERNAME" --arg password "$GHCR_PULL_TOKEN" --arg auth "$auth" '{auths:{"ghcr.io":{username:$username,password:$password,auth:$auth}}}')
+          printf '%s' "$docker_config" | kubectl create secret generic ghcr-pull --namespace voting-app --type=kubernetes.io/dockerconfigjson --from-file=.dockerconfigjson=/dev/stdin --dry-run=client -o yaml | kubectl apply -f -
+      - name: Deploy Helm release
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          IMAGE_TAG: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          image_root="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          helm upgrade --install voting-app ./helm/example-voting-app \
+            --namespace voting-app \
+            --set-string "images.vote.repository=$image_root-vote" \
+            --set-string "images.result.repository=$image_root-result" \
+            --set-string "images.worker.repository=$image_root-worker" \
+            --set-string "images.tag=$IMAGE_TAG" \
+            --wait --timeout 10m
