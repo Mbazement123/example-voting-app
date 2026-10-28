@@ -15,19 +15,68 @@ provider "aws" {
   region = var.aws_region
 }
 
-data "aws_vpc" "default" {
-  default = true
-}
-
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
+data "aws_availability_zones" "available" {
+  state = "available"
 }
 
 locals {
-  cluster_name = "voting-app-${var.environment}"
+  cluster_name       = "voting-app-${var.environment}"
+  availability_zones = slice(data.aws_availability_zones.available.names, 0, 2)
+}
+
+resource "aws_vpc" "app" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+
+  tags = {
+    Name = "${local.cluster_name}-vpc"
+  }
+}
+
+resource "aws_internet_gateway" "app" {
+  vpc_id = aws_vpc.app.id
+
+  tags = {
+    Name = "${local.cluster_name}-igw"
+  }
+}
+
+resource "aws_subnet" "public" {
+  for_each = {
+    for index, zone in local.availability_zones : zone => index
+  }
+
+  vpc_id                  = aws_vpc.app.id
+  availability_zone       = each.key
+  cidr_block              = cidrsubnet(aws_vpc.app.cidr_block, 8, each.value + 1)
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name                                          = "${local.cluster_name}-public-${each.key}"
+    "kubernetes.io/cluster/${local.cluster_name}" = "shared"
+    "kubernetes.io/role/elb"                      = "1"
+  }
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.app.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.app.id
+  }
+
+  tags = {
+    Name = "${local.cluster_name}-public"
+  }
+}
+
+resource "aws_route_table_association" "public" {
+  for_each = aws_subnet.public
+
+  subnet_id      = each.value.id
+  route_table_id = aws_route_table.public.id
 }
 
 resource "aws_iam_role" "cluster" {
@@ -79,7 +128,7 @@ resource "aws_eks_cluster" "app" {
   version  = var.kubernetes_version
 
   vpc_config {
-    subnet_ids              = data.aws_subnets.default.ids
+    subnet_ids              = [for subnet in aws_subnet.public : subnet.id]
     endpoint_private_access = true
     endpoint_public_access  = true
     public_access_cidrs     = var.cluster_endpoint_public_access_cidrs
@@ -113,7 +162,7 @@ resource "aws_eks_node_group" "app" {
   cluster_name    = aws_eks_cluster.app.name
   node_group_name = "${local.cluster_name}-nodes"
   node_role_arn   = aws_iam_role.nodes.arn
-  subnet_ids      = data.aws_subnets.default.ids
+  subnet_ids      = [for subnet in aws_subnet.public : subnet.id]
   instance_types  = [var.node_instance_type]
 
   scaling_config {

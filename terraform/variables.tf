@@ -1,5 +1,5 @@
 variable "aws_region" {
-  description = "AWS region containing the default VPC and EKS cluster."
+  description = "AWS region containing the EKS cluster and its VPC."
   type        = string
   default     = "us-east-1"
 }
