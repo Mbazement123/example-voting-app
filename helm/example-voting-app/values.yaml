@@ -4,14 +4,14 @@ images:
   tag: latest
   pullPolicy: IfNotPresent
   vote:
-    repository: ghcr.io/dockersamples/example-voting-app-vote
+    repository: mbazement123/example-voting-app-vote
   result:
-    repository: ghcr.io/dockersamples/example-voting-app-result
+    repository: mbazement123/example-voting-app-result
   worker:
-    repository: ghcr.io/dockersamples/example-voting-app-worker
+    repository: mbazement123/example-voting-app-worker
 
 imagePullSecrets:
-  - name: ghcr-pull
+  - name: dockerhub-pull
 
 postgres:
   image: postgres:15-alpine

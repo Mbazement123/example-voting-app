@@ -1,6 +1,6 @@
 # Run Example Voting App on AWS
 
-This guide deploys the application to Amazon EKS using the repository's GitHub Actions workflows. Terraform creates the EKS cluster and node group; GitHub Actions builds and publishes the application images to GHCR, then Helm deploys the application.
+This guide deploys the application to Amazon EKS using the repository's GitHub Actions workflows. Terraform creates the EKS cluster and node group; GitHub Actions builds and publishes the application images to Docker Hub, then Helm deploys the application.
 
 > **Cost and credentials:** EKS, EC2 worker nodes, EBS volumes, and related AWS resources incur charges. The workflows authenticate with long-lived IAM access keys because this repository is configured for access-key authentication. Use a dedicated IAM user, grant only the permissions it needs, rotate its keys, and store them only as GitHub Actions secrets. Never paste credentials into source files or commit them.
 
@@ -77,7 +77,8 @@ In the repository, open **Settings → Secrets and variables → Actions** and a
 | `AWS_ACCESS_KEY_ID` | Access key ID for the dedicated IAM user |
 | `AWS_SECRET_ACCESS_KEY` | Secret access key for that IAM user |
 | `POSTGRES_PASSWORD` | A strong, unique database password |
-| `GHCR_PULL_TOKEN` | GitHub token with `read:packages` access to the repository's GHCR packages |
+| `DOCKER_USERNAME` | Docker Hub account that owns the application image repositories |
+| `DOCKER_PASSWORD` | Docker Hub access token used to publish and pull images |
 
 ### Repository variables
 
@@ -85,7 +86,6 @@ In the repository, open **Settings → Secrets and variables → Actions** and a
 | --- | --- |
 | `AWS_REGION` | AWS region for the cluster and state bucket, for example `us-east-1` |
 | `AWS_IAM_PRINCIPAL_ARN` | ARN of the IAM user associated with the AWS access keys |
-| `GHCR_USERNAME` | GitHub username that owns the `GHCR_PULL_TOKEN` |
 
 Use the full IAM **user** ARN for `AWS_IAM_PRINCIPAL_ARN`, not an IAM role ARN. The access keys and ARN must belong to the same user.
 
@@ -158,12 +158,12 @@ ACTIVE
 
 ## 6. Deploy the application
 
-The **CI** workflow tests the application, validates Terraform and Helm, and builds and scans the three service images. Pushes to `main` publish the images to GHCR tagged with the commit SHA. When a pull request is merged to `main`, the **Provision infrastructure** workflow applies Terraform first, waits for the images for that merge commit to be published, then deploys it to EKS with Helm.
+The **CI** workflow tests the application, validates Terraform and Helm, and builds and scans the three service images. Pushes to `main` publish the images to Docker Hub tagged with the commit SHA. When a pull request is merged to `main`, the **Provision infrastructure** workflow applies Terraform first, waits for the images for that merge commit to be published, then deploys it to EKS with Helm.
 
 The workflow also creates/updates these Kubernetes Secrets in the `voting-app` namespace:
 
 - `voting-app-db` for the PostgreSQL password.
-- `ghcr-pull` for pulling the GHCR images.
+- `dockerhub-pull` for pulling the Docker Hub images.
 
 Open **Actions → Provision infrastructure** and wait for the **Apply infrastructure** and **Deploy to EKS** jobs to finish. Confirm the workloads are ready:
 
@@ -181,14 +181,14 @@ The pods should reach `Running`/`Ready`, and the PostgreSQL PVC should become `B
 
 ### Deploy the Helm YAML chart manually
 
-The file `helm/example-voting-app/templates/resources.yaml` is a Helm template, not a plain Kubernetes YAML file. Render and install it with Helm; do not run `kubectl apply -f` directly on the template. The following commands assume the cluster is provisioned, the `voting-app` AWS profile is configured, and the application images have already been pushed to GHCR. A push to `main` runs the image build and publishes images tagged with that commit's full SHA.
+The file `helm/example-voting-app/templates/resources.yaml` is a Helm template, not a plain Kubernetes YAML file. Render and install it with Helm; do not run `kubectl apply -f` directly on the template. The following commands assume the cluster is provisioned, the `voting-app` AWS profile is configured, and the application images have already been pushed to Docker Hub. A push to `main` runs the image build and publishes images tagged with that commit's full SHA.
 
 Configure local access and select the image tag from the successful **CI** run:
 
 ```shell
 export AWS_PROFILE=voting-app
 export AWS_REGION=us-east-1
-export GITHUB_REPOSITORY=OWNER/REPOSITORY
+export DOCKER_USERNAME=YOUR_DOCKER_HUB_USERNAME
 export IMAGE_TAG=FULL_COMMIT_SHA
 
 aws eks update-kubeconfig \
@@ -215,22 +215,21 @@ printf '%s' "$POSTGRES_PASSWORD" |
 unset POSTGRES_PASSWORD
 ```
 
-Create the GHCR pull Secret using a temporary Docker config. Enter a GitHub token with `read:packages` access when prompted. The temporary config is removed when the shell exits:
+Create the Docker Hub pull Secret using a temporary Docker config. Enter a Docker Hub access token when prompted. The temporary config is removed when the shell exits:
 
 ```shell
-export GHCR_USERNAME=YOUR_GITHUB_USERNAME
 docker_config_dir="$(mktemp -d)"
 trap 'rm -r -- "$docker_config_dir"' EXIT
 
-read -r -s -p "GHCR read:packages token: " GHCR_PULL_TOKEN
+read -r -s -p "Docker Hub access token: " DOCKER_PASSWORD
 printf '\n'
-printf '%s' "$GHCR_PULL_TOKEN" |
-  docker --config "$docker_config_dir" login ghcr.io \
-    --username "$GHCR_USERNAME" \
+printf '%s' "$DOCKER_PASSWORD" |
+  docker --config "$docker_config_dir" login docker.io \
+    --username "$DOCKER_USERNAME" \
     --password-stdin
-unset GHCR_PULL_TOKEN
+unset DOCKER_PASSWORD
 
-kubectl create secret generic ghcr-pull \
+kubectl create secret generic dockerhub-pull \
   --namespace voting-app \
   --type=kubernetes.io/dockerconfigjson \
   --from-file=.dockerconfigjson="$docker_config_dir/config.json" \
@@ -238,23 +237,24 @@ kubectl create secret generic ghcr-pull \
   kubectl apply -f -
 ```
 
-Install the chart. The image names match the repository's CI workflow (`ghcr.io/OWNER/REPOSITORY-vote`, `-result`, and `-worker`):
+Install the chart. The image names match the repository's CI workflow (`docker.io/DOCKER_USERNAME/example-voting-app-vote`, `-result`, and `-worker`):
 
 ```shell
-image_root="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+docker_username="$(printf '%s' "$DOCKER_USERNAME" | tr '[:upper:]' '[:lower:]')"
+image_root="docker.io/$docker_username"
 
 helm upgrade --install voting-app ./helm/example-voting-app \
   --namespace voting-app \
-  --set-string "images.vote.repository=$image_root-vote" \
-  --set-string "images.result.repository=$image_root-result" \
-  --set-string "images.worker.repository=$image_root-worker" \
+  --set-string "images.vote.repository=$image_root/example-voting-app-vote" \
+  --set-string "images.result.repository=$image_root/example-voting-app-result" \
+  --set-string "images.worker.repository=$image_root/example-voting-app-worker" \
   --set-string "images.tag=$IMAGE_TAG" \
   --wait --timeout 10m
 
 kubectl get pods,services,pvc -n voting-app
 ```
 
-If the images are private, the `GHCR_USERNAME` and token must be authorized to pull them. The workflow path creates these same Kubernetes Secrets automatically; do not repeat the manual secret creation when the workflow has already created them.
+If the images are private, `DOCKER_USERNAME` and its access token must be authorized to pull them. The workflow path creates these same Kubernetes Secrets automatically; do not repeat the manual secret creation when the workflow has already created them.
 
 ## 7. Open the voting and results pages
 
@@ -303,8 +303,8 @@ Common causes:
 - **AWS credentials or access denied:** Check the two AWS Actions secrets, their IAM user's policy, the region, and the `AWS_IAM_PRINCIPAL_ARN` variable.
 - **Terraform state errors:** Confirm the region is correct and the IAM user can create/configure the account- and region-specific bucket and access its state and lock objects.
 - **EKS access denied:** Confirm Terraform completed and the local AWS identity matches the IAM user ARN configured for EKS, or add a separate EKS access entry for your local identity.
-- **Image pull errors / `ImagePullBackOff`:** Check that the GHCR packages exist and are accessible to `GHCR_USERNAME`/`GHCR_PULL_TOKEN`; the token needs `read:packages`.
-- **Missing secret:** Confirm `POSTGRES_PASSWORD` and the GHCR credentials are set in Actions and the deployment workflow completed its secret-creation step.
+- **Image pull errors / `ImagePullBackOff`:** Check that the Docker Hub repositories exist and are accessible to `DOCKER_USERNAME`/`DOCKER_PASSWORD`.
+- **Missing secret:** Confirm `POSTGRES_PASSWORD` and the Docker Hub credentials are set in Actions and the deployment workflow completed its secret-creation step.
 - **PVC pending:** Confirm the EBS CSI add-on is active and the cluster's node group is healthy. EBS volumes are provisioned in the same availability zone as their node.
 - **Pods not ready:** Inspect the pod events and logs above. Wait for PostgreSQL and Redis to become ready before investigating dependent service startup.
 - **Deploy failed before EKS became active:** Wait until the provision workflow succeeds, then rerun the failed deploy job in its Actions run.
