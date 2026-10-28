@@ -209,8 +209,27 @@ jobs:
             --set-string "images.vote.repository=docker.io/$docker_username/example-voting-app-vote" \
             --set-string "images.result.repository=docker.io/$docker_username/example-voting-app-result" \
             --set-string "images.worker.repository=docker.io/$docker_username/example-voting-app-worker" \
-            --set-string "images.tag=$IMAGE_TAG" \
-            --wait --timeout 10m
+            --set-string "images.tag=$IMAGE_TAG"
+      - name: Recover stale database pod and wait for rollout
+        run: |
+          stateful_set=voting-app-example-voting-app-db
+          db_pod="${stateful_set}-0"
+          update_revision=$(kubectl get statefulset "$stateful_set" --namespace voting-app \
+            -o jsonpath='{.status.updateRevision}')
+          pod_revision=$(kubectl get pod "$db_pod" --namespace voting-app \
+            -o jsonpath='{.metadata.labels.controller-revision-hash}' 2>/dev/null || true)
+
+          if [ -n "$update_revision" ] && [ "$update_revision" != "$pod_revision" ]; then
+            echo "Replacing stale database pod ($pod_revision) with StatefulSet revision $update_revision."
+            kubectl delete pod "$db_pod" --namespace voting-app --ignore-not-found --wait=true --timeout=2m
+          fi
+
+          kubectl rollout status "statefulset/$stateful_set" --namespace voting-app --timeout=10m
+          while IFS= read -r deployment; do
+            [ -n "$deployment" ] || continue
+            kubectl rollout status "$deployment" --namespace voting-app --timeout=10m
+          done < <(kubectl get deployments --namespace voting-app \
+            -l app.kubernetes.io/instance=voting-app -o name)
       - name: Diagnose failed deployment
         if: failure()
         run: |
