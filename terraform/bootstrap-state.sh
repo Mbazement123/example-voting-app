@@ -20,32 +20,26 @@ backend_config=(
   "-backend-config=use_lockfile=true"
 )
 
-if aws s3api head-object \
+if ! aws s3api head-bucket \
+  --bucket "$TF_STATE_BUCKET" \
+  --region "$AWS_REGION" >/dev/null 2>&1; then
+  create_bucket_args=(--bucket "$TF_STATE_BUCKET" --region "$AWS_REGION")
+  if [[ "$AWS_REGION" != "us-east-1" ]]; then
+    create_bucket_args+=(--create-bucket-configuration "LocationConstraint=$AWS_REGION")
+  fi
+  aws s3api create-bucket "${create_bucket_args[@]}"
+fi
+
+terraform -chdir="$terraform_dir" init -input=false "${backend_config[@]}"
+
+if ! aws s3api head-object \
   --bucket "$TF_STATE_BUCKET" \
   --key "$state_key" \
   --region "$AWS_REGION" >/dev/null 2>&1; then
-  terraform -chdir="$terraform_dir" init -input=false "${backend_config[@]}"
-else
-  terraform -chdir="$terraform_dir" init -backend=false -input=false
-
-  if aws s3api head-bucket \
-    --bucket "$TF_STATE_BUCKET" \
-    --region "$AWS_REGION" >/dev/null 2>&1; then
-    terraform -chdir="$terraform_dir" import \
-      -input=false \
-      -var="aws_region=$AWS_REGION" \
-      aws_s3_bucket.state "$TF_STATE_BUCKET"
-  fi
-
-  terraform -chdir="$terraform_dir" apply \
+  terraform -chdir="$terraform_dir" import \
     -input=false \
-    -auto-approve \
-    -var="aws_region=$AWS_REGION"
-
-  terraform -chdir="$terraform_dir" init \
-    -input=false \
-    -migrate-state \
-    "${backend_config[@]}"
+    -var="aws_region=$AWS_REGION" \
+    aws_s3_bucket.state "$TF_STATE_BUCKET"
 fi
 
 terraform -chdir="$terraform_dir" apply \
