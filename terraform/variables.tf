@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region containing the EKS cluster and its VPC."
   type        = string
-  default     = "us-east-1"
+  default     = "eu-north-1"
 }
 
 variable "environment" {
