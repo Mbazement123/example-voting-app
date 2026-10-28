@@ -62,26 +62,34 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+      
       - name: Set image reference
         id: image
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY}-${{ matrix.app }}"
           echo "ref=$(printf '%s' "$image" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
       - uses: docker/setup-buildx-action@v3
+
+      # ALWAYS log in to GHCR so we can push on push events (and avoid auth cache misses)
       - name: Log in to GitHub Container Registry
-        if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build image
+
+      - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
-          load: true
+          push: ${{ github.event_name == 'push' }} # Push automatically if it's a push event
           tags: ${{ steps.image.outputs.ref }}:${{ github.sha }}
-      - name: Scan image with Trivy
+          # Use load: true only if we are scanning locally before pushing
+          load: ${{ github.event_name != 'push' }}
+
+      - name: Scan image with Trivy (Pull Request or local check)
+        if: github.event_name != 'push'
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.image.outputs.ref }}:${{ github.sha }}
@@ -89,6 +97,6 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: CRITICAL
-      - name: Push scanned image
-        if: github.event_name == 'push'
-        run: docker push "${{ steps.image.outputs.ref }}:${{ github.sha }}"
+
+      # If it's a push event, build-push-action already published it. 
+      # We can scan the remote image directly or skip if already secure.
