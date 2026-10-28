@@ -150,17 +150,23 @@ jobs:
           echo "EKS cluster did not become active within 30 minutes" >&2
           exit 1
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          registry: docker.io
-          username: ${{ secrets.DOCKER_USERNAME || github.repository_owner }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME || github.repository_owner }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        run: |
+          username=$(printf '%s' "$DOCKER_USERNAME" | tr -d '\r\n' | tr '[:upper:]' '[:lower:]')
+          password=$(printf '%s' "$DOCKER_PASSWORD" | tr -d '\r\n')
+          if [ -z "$username" ] || [ -z "$password" ]; then
+            echo "Docker Hub username and password must be configured." >&2
+            exit 1
+          fi
+          printf '%s' "$password" | docker login docker.io --username "$username" --password-stdin
       - name: Verify published application images
         env:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME || github.repository_owner }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker_username=$(printf '%s' "$DOCKER_USERNAME" | tr '[:upper:]' '[:lower:]')
+          docker_username=$(printf '%s' "$DOCKER_USERNAME" | tr -d '\r\n' | tr '[:upper:]' '[:lower:]')
           for app in vote result worker; do
             image="docker.io/$docker_username/example-voting-app-$app:$IMAGE_TAG"
             if ! docker manifest inspect "$image" >/dev/null 2>&1; then
@@ -181,6 +187,12 @@ jobs:
           test -n "$POSTGRES_PASSWORD"
           test -n "$DOCKER_USERNAME"
           test -n "$DOCKER_PASSWORD"
+          DOCKER_USERNAME=$(printf '%s' "$DOCKER_USERNAME" | tr -d '\r\n' | tr '[:upper:]' '[:lower:]')
+          DOCKER_PASSWORD=$(printf '%s' "$DOCKER_PASSWORD" | tr -d '\r\n')
+          if [ -z "$DOCKER_USERNAME" ] || [ -z "$DOCKER_PASSWORD" ]; then
+            echo "Docker Hub username and password must not be empty." >&2
+            exit 1
+          fi
           kubectl create namespace voting-app --dry-run=client -o yaml | kubectl apply -f -
           kubectl create secret generic voting-app-db --namespace voting-app --from-literal="password=$POSTGRES_PASSWORD" --dry-run=client -o yaml | kubectl apply -f -
           auth=$(printf '%s:%s' "$DOCKER_USERNAME" "$DOCKER_PASSWORD" | base64 -w0)
@@ -191,7 +203,7 @@ jobs:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME || github.repository_owner }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker_username=$(printf '%s' "$DOCKER_USERNAME" | tr '[:upper:]' '[:lower:]')
+          docker_username=$(printf '%s' "$DOCKER_USERNAME" | tr -d '\r\n' | tr '[:upper:]' '[:lower:]')
           helm upgrade --install voting-app ./helm/example-voting-app \
             --namespace voting-app \
             --set-string "images.vote.repository=docker.io/$docker_username/example-voting-app-vote" \
