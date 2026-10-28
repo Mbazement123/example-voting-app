@@ -122,9 +122,6 @@ resource "aws_iam_role_policy_attachment" "nodes" {
   policy_arn = each.value
 }
 
-  role       = aws_iam_role.nodes.name
-  policy_arn = each.value
-}
 
 resource "aws_eks_cluster" "app" {
   name     = local.cluster_name
