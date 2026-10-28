@@ -30,7 +30,7 @@ if ! aws s3api head-bucket \
   aws s3api create-bucket "${create_bucket_args[@]}"
 fi
 
-terraform -chdir="$terraform_dir" init -input=false "${backend_config[@]}"
+terraform -chdir="$terraform_dir" init -reconfigure -input=false "${backend_config[@]}"
 
 if ! aws s3api head-object \
   --bucket "$TF_STATE_BUCKET" \

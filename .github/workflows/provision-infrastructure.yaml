@@ -35,20 +35,18 @@ jobs:
           AWS_REGION: ${{ vars.AWS_REGION }}
         run: bash terraform/bootstrap-state.sh
       - name: Initialize Terraform
-        working-directory: terraform
         env:
           AWS_REGION: ${{ vars.AWS_REGION }}
         run: >-
-          terraform init -input=false
+          terraform -chdir=terraform init -reconfigure -input=false
           -backend-config="bucket=$TF_STATE_BUCKET"
           -backend-config="key=example-voting-app/${{ vars.AWS_REGION }}/terraform.tfstate"
           -backend-config="region=${{ vars.AWS_REGION }}"
           -backend-config="encrypt=true"
           -backend-config="use_lockfile=true"
       - name: Plan infrastructure
-        working-directory: terraform
         run: >-
-          terraform plan -input=false -lock-timeout=5m
+          terraform -chdir=terraform plan -input=false -lock-timeout=5m
           -var="aws_region=${{ vars.AWS_REGION }}"
           -var="github_actions_principal_arn=${{ vars.AWS_IAM_PRINCIPAL_ARN }}"
 
@@ -71,20 +69,18 @@ jobs:
           AWS_REGION: ${{ vars.AWS_REGION }}
         run: bash terraform/bootstrap-state.sh
       - name: Initialize Terraform
-        working-directory: terraform
         env:
           AWS_REGION: ${{ vars.AWS_REGION }}
         run: >-
-          terraform init -input=false
+          terraform -chdir=terraform init -reconfigure -input=false
           -backend-config="bucket=$TF_STATE_BUCKET"
           -backend-config="key=example-voting-app/${{ vars.AWS_REGION }}/terraform.tfstate"
           -backend-config="region=${{ vars.AWS_REGION }}"
           -backend-config="encrypt=true"
           -backend-config="use_lockfile=true"
       - name: Apply infrastructure
-        working-directory: terraform
         run: >-
-          terraform apply -input=false -auto-approve
+          terraform -chdir=terraform apply -input=false -auto-approve
           -var="aws_region=${{ vars.AWS_REGION }}"
           -var="github_actions_principal_arn=${{ vars.AWS_IAM_PRINCIPAL_ARN }}"
 
