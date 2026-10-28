@@ -211,3 +211,26 @@ jobs:
             --set-string "images.worker.repository=docker.io/$docker_username/example-voting-app-worker" \
             --set-string "images.tag=$IMAGE_TAG" \
             --wait --timeout 10m
+      - name: Diagnose failed deployment
+        if: failure()
+        run: |
+          echo "=== Voting app pods ==="
+          kubectl get pods --namespace voting-app -l app.kubernetes.io/instance=voting-app -o wide || true
+          echo "=== Database StatefulSet ==="
+          kubectl describe statefulset voting-app-example-voting-app-db --namespace voting-app || true
+          echo "=== Database pod details and current logs ==="
+          db_pod=$(kubectl get pods --namespace voting-app \
+            -l app.kubernetes.io/instance=voting-app,app.kubernetes.io/component=db \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+          if [ -n "$db_pod" ]; then
+            kubectl describe pod "$db_pod" --namespace voting-app || true
+            kubectl logs "$db_pod" --namespace voting-app --all-containers=true || true
+            echo "=== Previous database container logs ==="
+            kubectl logs "$db_pod" --namespace voting-app --all-containers=true --previous || true
+          else
+            echo "No database pod found."
+          fi
+          echo "=== Persistent volume claims ==="
+          kubectl get pvc --namespace voting-app || true
+          echo "=== Recent namespace events ==="
+          kubectl get events --namespace voting-app --sort-by=.lastTimestamp || true
