@@ -115,8 +115,12 @@ resource "aws_iam_role_policy_attachment" "nodes" {
     "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
     "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
     "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
-    "arn:aws:iam::aws:policy/AmazonEBSCSIDriverPolicy",
+    "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy",
   ])
+  
+  role       = aws_iam_role.nodes.name  # Ensure this matches your node group role resource name
+  policy_arn = each.value
+}
 
   role       = aws_iam_role.nodes.name
   policy_arn = each.value
