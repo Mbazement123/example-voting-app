@@ -2,17 +2,58 @@ name: Provision infrastructure
 
 on:
   pull_request:
-    types: [closed]
+    types: [opened, synchronize, reopened, closed]
     branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
-  group: voting-app-terraform
+  group: voting-app-terraform-${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('plan-{0}', github.event.pull_request.number) || 'apply' }}
   cancel-in-progress: false
 
 jobs:
+  plan:
+    name: Plan infrastructure
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Set Terraform state bucket
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          echo "TF_STATE_BUCKET=example-voting-app-terraform-state-${account_id}-${AWS_REGION}" >> "$GITHUB_ENV"
+      - name: Initialize Terraform
+        working-directory: terraform
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: >-
+          terraform init -input=false
+          -backend-config="bucket=$TF_STATE_BUCKET"
+          -backend-config="key=example-voting-app/${{ vars.AWS_REGION }}/terraform.tfstate"
+          -backend-config="region=${{ vars.AWS_REGION }}"
+          -backend-config="encrypt=true"
+          -backend-config="use_lockfile=true"
+      - name: Plan infrastructure
+        working-directory: terraform
+        run: >-
+          terraform plan -input=false -lock-timeout=5m
+          -var="aws_region=${{ vars.AWS_REGION }}"
+          -var="github_actions_principal_arn=${{ vars.AWS_IAM_PRINCIPAL_ARN }}"
+
   apply:
     name: Apply infrastructure
     if: github.event.pull_request.merged == true
