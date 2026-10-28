@@ -98,6 +98,7 @@ jobs:
       group: voting-app-deploy
       cancel-in-progress: true
     permissions:
+      actions: read
       contents: read
       packages: read
     steps:
@@ -109,6 +110,37 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
+      - name: Wait for CI image build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_TAG: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          for attempt in $(seq 1 120); do
+            runs=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow ci-cd.yaml \
+              --commit "$IMAGE_TAG" \
+              --event push \
+              --json databaseId,status,conclusion \
+              --limit 10)
+            run_id=$(jq -r '.[0].databaseId // empty' <<< "$runs")
+            status=$(jq -r '.[0].status // empty' <<< "$runs")
+
+            if [ "$status" = completed ]; then
+              conclusion=$(jq -r '.[0].conclusion // empty' <<< "$runs")
+              if [ "$conclusion" = success ]; then
+                echo "CI completed successfully for $IMAGE_TAG (run $run_id)"
+                exit 0
+              fi
+              echo "CI run $run_id for $IMAGE_TAG completed with conclusion: $conclusion" >&2
+              exit 1
+            fi
+
+            echo "Waiting for CI image build for $IMAGE_TAG (attempt $attempt/120)"
+            sleep 15
+          done
+          echo "Timed out waiting for CI image build for $IMAGE_TAG" >&2
+          exit 1
       - name: Wait for EKS cluster
         env:
           AWS_REGION: ${{ vars.AWS_REGION }}
@@ -129,7 +161,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Wait for application images
+      - name: Verify published application images
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
           IMAGE_TAG: ${{ github.event.pull_request.merge_commit_sha }}
@@ -137,17 +169,11 @@ jobs:
           image_root="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           for app in vote result worker; do
             image="$image_root-$app:$IMAGE_TAG"
-            for attempt in $(seq 1 60); do
-              if docker manifest inspect "$image" >/dev/null 2>&1; then
-                break
-              fi
-              if [ "$attempt" -eq 60 ]; then
-                echo "Timed out waiting for image $image to be published" >&2
-                exit 1
-              fi
-              echo "Waiting for $image to be published (attempt $attempt/60)"
-              sleep 10
-            done
+            if ! docker manifest inspect "$image" >/dev/null 2>&1; then
+              echo "Expected image was not published: $image" >&2
+              exit 1
+            fi
+            echo "Verified $image"
           done
       - name: Configure kubectl
         run: aws eks update-kubeconfig --region "${{ vars.AWS_REGION }}" --name voting-app-dev
@@ -162,7 +188,7 @@ jobs:
           test -n "$GHCR_USERNAME"
           test -n "$GHCR_PULL_TOKEN"
           kubectl create namespace voting-app --dry-run=client -o yaml | kubectl apply -f -
-          printf '%s' "$POSTGRES_PASSWORD" | kubectl create secret generic voting-app-db --namespace voting-app --from-file=password=/dev/stdin --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret generic voting-app-db --namespace voting-app --from-literal="password=$POSTGRES_PASSWORD" --dry-run=client -o yaml | kubectl apply -f -
           auth=$(printf '%s:%s' "$GHCR_USERNAME" "$GHCR_PULL_TOKEN" | base64 -w0)
           docker_config=$(jq -n --arg username "$GHCR_USERNAME" --arg password "$GHCR_PULL_TOKEN" --arg auth "$auth" '{auths:{"ghcr.io":{username:$username,password:$password,auth:$auth}}}')
           printf '%s' "$docker_config" | kubectl create secret generic ghcr-pull --namespace voting-app --type=kubernetes.io/dockerconfigjson --from-file=.dockerconfigjson=/dev/stdin --dry-run=client -o yaml | kubectl apply -f -
