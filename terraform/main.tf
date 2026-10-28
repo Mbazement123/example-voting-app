@@ -117,8 +117,8 @@ resource "aws_iam_role_policy_attachment" "nodes" {
     "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
     "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy",
   ])
-  
-  role       = aws_iam_role.nodes.name  # Ensure this matches your node group role resource name
+
+  role       = aws_iam_role.nodes.name # Ensure this matches your node group role resource name
   policy_arn = each.value
 }
 
