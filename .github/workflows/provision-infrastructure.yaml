@@ -30,12 +30,10 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
-      - name: Set Terraform state bucket
+      - name: Create or update Terraform state bucket
         env:
           AWS_REGION: ${{ vars.AWS_REGION }}
-        run: |
-          account_id=$(aws sts get-caller-identity --query Account --output text)
-          echo "TF_STATE_BUCKET=example-voting-app-terraform-state-${account_id}-${AWS_REGION}" >> "$GITHUB_ENV"
+        run: bash terraform/bootstrap-state.sh
       - name: Initialize Terraform
         working-directory: terraform
         env:
