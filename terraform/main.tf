@@ -6,6 +6,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
   }
 
 }
@@ -114,12 +118,9 @@ resource "aws_iam_role_policy_attachment" "nodes" {
     "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
     "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
     "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
-    # OPTIONAL: You can safely remove the line below now that you are setting up IRSA,
-    # as the pods will no longer rely on the underlying EC2 node's permissions.
-    "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy",
   ])
 
-  role       = aws_iam_role.nodes.name 
+  role       = aws_iam_role.nodes.name
   policy_arn = each.value
 }
 
@@ -207,6 +208,7 @@ resource "aws_iam_role" "ebs_csi" {
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
           StringEquals = {
+            "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:aud" = "sts.amazonaws.com"
             "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub" = "system:serviceaccount:kube-system:ebs-csi-controller-sa"
           }
         }
@@ -227,9 +229,9 @@ resource "aws_eks_addon" "ebs_csi" {
   addon_name                  = "aws-ebs-csi-driver"
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "PRESERVE"
-  
+
   # Passes the newly built IRSA Role directly to the Addon configuration
-  service_account_role_arn    = aws_iam_role.ebs_csi.arn
+  service_account_role_arn = aws_iam_role.ebs_csi.arn
 
   depends_on = [
     aws_eks_node_group.app,
